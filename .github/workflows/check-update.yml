@@ -43,13 +43,13 @@ jobs:
 
           if [ -z "$current" ]; then
             echo "No existing release found, triggering build for chromium/$latest"
-            gh workflow run build.yml -f pdfium_branch="$latest"
+            gh workflow run build.yml -f pdfium_branch="$latest" -f platform=all
             exit 0
           fi
 
           if [ "$latest" -gt "$current" ] 2>/dev/null; then
             echo "New version available: $latest (current: $current)"
-            gh workflow run build.yml -f pdfium_branch="$latest"
+            gh workflow run build.yml -f pdfium_branch="$latest" -f platform=all
             echo "Build triggered for chromium/$latest"
           else
             echo "Already up to date at chromium/$current (upstream: $latest)"

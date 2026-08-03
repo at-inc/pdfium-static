@@ -7,6 +7,19 @@ on:
         description: 'PDFium chromium branch number'
         required: true
         default: '7734'
+        type: string
+      platform:
+        description: 'Platform to build'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos-arm64
+          - macos-x64
+          - linux-x64
+          - windows-x64
+          - wasm
 
 env:
   DEPOT_TOOLS_WIN_TOOLCHAIN: 0
@@ -14,35 +27,82 @@ env:
   EMSDK_VERSION: '4.0.23'
 
 jobs:
+  select-platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+
+    steps:
+      - name: Select build matrix
+        id: select
+        env:
+          BUILD_PLATFORM: ${{ inputs.platform }}
+        run: |
+          matrix=$(jq -cn --arg platform "$BUILD_PLATFORM" '
+            [
+              {
+                platform: "macos-arm64",
+                os: "macos-15",
+                target_os: "mac",
+                target_cpu: "arm64",
+                artifact_name: "libpdfium-macos-arm64",
+                lib_file: "out/Default/obj/libpdfium.a",
+                extra_args: ""
+              },
+              {
+                platform: "macos-x64",
+                os: "macos-15-intel",
+                target_os: "mac",
+                target_cpu: "x64",
+                artifact_name: "libpdfium-macos-x64",
+                lib_file: "out/Default/obj/libpdfium.a",
+                extra_args: ""
+              },
+              {
+                platform: "linux-x64",
+                os: "ubuntu-22.04",
+                target_os: "linux",
+                target_cpu: "x64",
+                artifact_name: "libpdfium-linux-x64",
+                lib_file: "out/Default/obj/libpdfium.a",
+                extra_args: "use_sysroot = false"
+              },
+              {
+                platform: "windows-x64",
+                os: "windows-2025",
+                target_os: "win",
+                target_cpu: "x64",
+                artifact_name: "pdfium-windows-x64",
+                lib_file: "out/Default/obj/pdfium.lib",
+                extra_args: ""
+              },
+              {
+                platform: "wasm",
+                os: "ubuntu-22.04",
+                target_os: "emscripten",
+                target_cpu: "wasm",
+                artifact_name: "libpdfium-wasm",
+                lib_file: "out/Default/obj/libpdfium.a",
+                extra_args: "is_clang = false"
+              }
+            ]
+            | map(select($platform == "all" or .platform == $platform))
+            | {include: .}
+          ')
+
+          if ! jq -e '.include | length > 0' <<< "$matrix" > /dev/null; then
+            echo "Unknown build platform: $BUILD_PLATFORM" >&2
+            exit 1
+          fi
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
+    name: Build ${{ matrix.platform }}
+    needs: select-platforms
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target_os: mac
-            target_cpu: arm64
-            artifact_name: libpdfium-macos-arm64
-            lib_file: out/Default/obj/libpdfium.a
-            extra_args: ""
-          - os: ubuntu-22.04
-            target_os: linux
-            target_cpu: x64
-            artifact_name: libpdfium-linux-x64
-            lib_file: out/Default/obj/libpdfium.a
-            extra_args: "use_sysroot = false"
-          - os: windows-2025
-            target_os: win
-            target_cpu: x64
-            artifact_name: pdfium-windows-x64
-            lib_file: out/Default/obj/pdfium.lib
-            extra_args: ""
-          - os: ubuntu-22.04
-            target_os: emscripten
-            target_cpu: wasm
-            artifact_name: libpdfium-wasm
-            lib_file: out/Default/obj/libpdfium.a
-            extra_args: "is_clang = false"
+      matrix: ${{ fromJSON(needs.select-platforms.outputs.matrix) }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -138,7 +198,7 @@ jobs:
       - name: Verify static library
         if: matrix.target_os != 'emscripten'
         shell: bash
-        run: $GITHUB_WORKSPACE/scripts/verify-native.sh "pdfium-src/pdfium/${{ matrix.lib_file }}" "${{ matrix.target_os }}"
+        run: $GITHUB_WORKSPACE/scripts/verify-native.sh "pdfium-src/pdfium/${{ matrix.lib_file }}" "${{ matrix.target_os }}" "${{ matrix.target_cpu }}"
 
       - name: Test WASM with emcc
         if: matrix.target_os == 'emscripten'
@@ -182,15 +242,18 @@ jobs:
           body: |
             Static PDFium libraries built from `chromium/${{ env.PDFIUM_BRANCH }}`.
 
+            Selected platform assets are added to or updated on this release.
+
             ### Usage with pdfium-render
 
             Match the `pdfium_XXXX` feature flag in `pdfium-render` to this branch number.
 
-            ### Files
+            ### Build targets
 
-            | File | Platform |
+            | Asset | Platform |
             |------|----------|
             | `libpdfium-macos-arm64.a` | macOS ARM64 (Apple Silicon) |
+            | `libpdfium-macos-x64.a` | macOS x86_64 (Intel) |
             | `libpdfium-linux-x64.a` | Linux x86_64 |
             | `pdfium-windows-x64.lib` | Windows x86_64 |
             | `libpdfium-wasm.a` | WebAssembly (Emscripten) |

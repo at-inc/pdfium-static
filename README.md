@@ -1,6 +1,6 @@
 # pdfium-static
 
-Static PDFium libraries for macOS, Linux, Windows and WebAssembly.
+Static PDFium libraries for macOS (Apple Silicon and Intel), Linux, Windows and WebAssembly.
 
 Built from [pdfium.googlesource.com](https://pdfium.googlesource.com/pdfium/) via GitHub Actions.
 
@@ -15,8 +15,11 @@ Each release is tagged with the chromium branch number (e.g. `chromium/7543`).
 1. Go to **Actions** > **Build PDFium**
 2. Click **Run workflow**
 3. Enter the chromium branch number (e.g. `7543`)
-4. Wait ~15min for the build to complete
-5. A release is created automatically with the static libraries
+4. Choose `all` or one platform to build
+5. Wait for the build to complete
+6. A release is created or updated with the selected static libraries
+
+Available build targets are `macos-arm64`, `macos-x64`, `linux-x64`, `windows-x64` and `wasm`.
 
 ## Usage with pdfium-render (Rust)
 
