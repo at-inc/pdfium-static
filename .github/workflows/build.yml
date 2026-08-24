@@ -31,8 +31,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      revision: ${{ steps.revision.outputs.revision }}
 
     steps:
+      - name: Resolve PDFium revision
+        id: revision
+        run: |
+          revision=$(git ls-remote https://pdfium.googlesource.com/pdfium.git "refs/heads/chromium/$PDFIUM_BRANCH" | awk '{print $1}')
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
       - name: Select build matrix
         id: select
         env:
@@ -47,6 +54,8 @@ jobs:
                 target_cpu: "arm64",
                 artifact_name: "libpdfium-macos-arm64",
                 lib_file: "out/Default/obj/libpdfium.a",
+                sdk_target: "darwin-arm64",
+                sdk_library: "libpdfium.a",
                 extra_args: ""
               },
               {
@@ -56,6 +65,8 @@ jobs:
                 target_cpu: "x64",
                 artifact_name: "libpdfium-macos-x64",
                 lib_file: "out/Default/obj/libpdfium.a",
+                sdk_target: "darwin-x64",
+                sdk_library: "libpdfium.a",
                 extra_args: ""
               },
               {
@@ -65,6 +76,8 @@ jobs:
                 target_cpu: "x64",
                 artifact_name: "libpdfium-linux-x64",
                 lib_file: "out/Default/obj/libpdfium.a",
+                sdk_target: "",
+                sdk_library: "",
                 extra_args: "use_sysroot = false"
               },
               {
@@ -74,6 +87,8 @@ jobs:
                 target_cpu: "x64",
                 artifact_name: "pdfium-windows-x64",
                 lib_file: "out/Default/obj/pdfium.lib",
+                sdk_target: "win-x64",
+                sdk_library: "pdfium.lib",
                 extra_args: ""
               },
               {
@@ -83,6 +98,8 @@ jobs:
                 target_cpu: "wasm",
                 artifact_name: "libpdfium-wasm",
                 lib_file: "out/Default/obj/libpdfium.a",
+                sdk_target: "",
+                sdk_library: "",
                 extra_args: "is_clang = false"
               }
             ]
@@ -147,7 +164,7 @@ jobs:
         run: |
           mkdir pdfium-src && cd pdfium-src
           gclient config --unmanaged https://pdfium.googlesource.com/pdfium.git
-          gclient sync -r origin/chromium/${{ env.PDFIUM_BRANCH }} --no-history --shallow
+          gclient sync -r pdfium@${{ needs.select-platforms.outputs.revision }} --no-history --shallow
 
       - name: Install sysroot (Linux)
         if: matrix.target_os == 'linux'
@@ -205,6 +222,24 @@ jobs:
         working-directory: pdfium-src/pdfium
         run: $GITHUB_WORKSPACE/scripts/test-wasm.sh out/Default/obj/libpdfium.a
 
+      - name: Prepare SDK target
+        if: matrix.sdk_target != '' && inputs.platform == 'all'
+        shell: bash
+        run: |
+          SDK_TARGET="$RUNNER_TEMP/pdfium-sdk-${{ matrix.sdk_target }}"
+          mkdir -p "$SDK_TARGET/include/third_party" "$SDK_TARGET/lib"
+          cp -R pdfium-src/pdfium/public "$SDK_TARGET/include/public"
+          cp -R pdfium-src/pdfium/third_party/zlib "$SDK_TARGET/include/third_party/zlib"
+          cp "pdfium-src/pdfium/${{ matrix.lib_file }}" "$SDK_TARGET/lib/${{ matrix.sdk_library }}"
+          printf '%s\n' '${{ needs.select-platforms.outputs.revision }}' > "$SDK_TARGET/REVISION"
+
+      - name: Upload SDK target
+        if: matrix.sdk_target != '' && inputs.platform == 'all'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pdfium-sdk-${{ matrix.sdk_target }}
+          path: ${{ runner.temp }}/pdfium-sdk-${{ matrix.sdk_target }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -212,7 +247,7 @@ jobs:
           path: pdfium-src/pdfium/${{ matrix.lib_file }}
 
   release:
-    needs: build
+    needs: [select-platforms, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -228,11 +263,32 @@ jobs:
           mkdir release
           for dir in artifacts/*/; do
             name=$(basename "$dir")
+            [[ "$name" == pdfium-sdk-* ]] && continue
             file=$(find "$dir" -type f | head -1)
             ext="${file##*.}"
             cp "$file" "release/${name}.${ext}"
           done
           ls -la release/
+
+      - name: Prepare PDFium SDK archive
+        if: inputs.platform == 'all'
+        env:
+          PDFIUM_REVISION: ${{ needs.select-platforms.outputs.revision }}
+        run: |
+          set -euo pipefail
+
+          sdk="pdfium-sdk"
+          archive="pdfium-sdk-$PDFIUM_REVISION.tar.gz"
+
+          for target in darwin-arm64 darwin-x64 win-x64; do
+            artifact="artifacts/pdfium-sdk-$target"
+            mkdir -p "$sdk/$target"
+            cp -R "$artifact/." "$sdk/$target/"
+          done
+
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -C "$sdk" -cf - darwin-arm64 darwin-x64 win-x64 | \
+            gzip -n > "release/$archive"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -257,5 +313,6 @@ jobs:
             | `libpdfium-linux-x64.a` | Linux x86_64 |
             | `pdfium-windows-x64.lib` | Windows x86_64 |
             | `libpdfium-wasm.a` | WebAssembly (Emscripten) |
+            | `pdfium-sdk-<revision>.tar.gz` | PDFium SDK for macOS ARM64, macOS x64 and Windows x64 |
           files: release/*
           make_latest: true
